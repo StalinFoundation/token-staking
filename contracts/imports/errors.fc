@@ -1,0 +1,4 @@
+const int err::access_denied = 403;
+const int err::not_enough_value = 404;
+const int err::unknown = 0xffff;
+const int err::not_ready = 405;
