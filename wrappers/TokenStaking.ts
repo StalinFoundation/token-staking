@@ -1,48 +1,89 @@
-import { Address, beginCell, Cell, Contract, contractAddress, ContractProvider, Sender, SendMode, TupleBuilder } from 'ton-core';
+import {
+    Address,
+    beginCell,
+    Cell,
+    Contract,
+    contractAddress,
+    ContractProvider,
+    Sender,
+    SendMode,
+    TupleBuilder,
+} from 'ton-core';
 
+export type StakingConfig = {
+    min_percent: number;
+    max_percent: number;
+    reward_supply: bigint;
+    lockup_period: number;
+    min_cycles: number;
+    max_cycles: number;
+};
 export type TokenStakingConfig = {
-    owner: Address,
-    collection_content: string,
-    nft_content: string,
-    nft_item_code: Cell,
-    royalty_address: Address,
-    numerator: number,
-    denominator: number
+    owner: Address;
+    collection_content: string;
+    nft_content: string;
+    staking_conf: StakingConfig;
+    nft_item_code: Cell;
+    royalty_address: Address;
+    numerator: number;
+    denominator: number;
+};
+
+export type GetStakingConfigResult = {
+    current_supply: bigint, 
+    current_balance: bigint
+    staking_conf: StakingConfig;
 };
 
 const OFFCHAIN_CONTENT_PREFIX = 0x01;
 
 const serializeUri = (uri: string) => {
-  return new TextEncoder().encode(encodeURI(uri));
-}
+    return new TextEncoder().encode(encodeURI(uri));
+};
 
 function create_content(collection_link: string, nft_link: string) {
-  const contentBuffer = serializeUri(collection_link);
-  const contentBaseBuffer = serializeUri(nft_link);
-  var content_cell = beginCell().storeUint(OFFCHAIN_CONTENT_PREFIX, 8);
-  contentBuffer.forEach((byte) => {
-    content_cell.storeUint(byte, 8);
-  })
+    const contentBuffer = serializeUri(collection_link);
+    const contentBaseBuffer = serializeUri(nft_link);
+    var content_cell = beginCell().storeUint(OFFCHAIN_CONTENT_PREFIX, 8);
+    contentBuffer.forEach((byte) => {
+        content_cell.storeUint(byte, 8);
+    });
 
-  var content_base = beginCell()
-  contentBaseBuffer.forEach((byte) => {
-    content_base.storeUint(byte, 8);
-  })
-  return beginCell().storeRef(content_cell.endCell()).storeRef(content_base.endCell())
+    var content_base = beginCell();
+    contentBaseBuffer.forEach((byte) => {
+        content_base.storeUint(byte, 8);
+    });
+    return beginCell().storeRef(content_cell.endCell()).storeRef(content_base.endCell());
 }
 
 export function tokenStakingConfigToCell(config: TokenStakingConfig): Cell {
-    return  beginCell()
-                .storeAddress(config.owner)
-                .storeUint(0, 64)
-                .storeAddress(null)
-                .storeCoins(0)
-                .storeCoins(0)
-                .storeBit(1)
-                .storeRef(create_content(config.collection_content, config.nft_content))
-                .storeRef(config.nft_item_code)
-                .storeRef(beginCell().storeUint(config.numerator, 16).storeUint(config.denominator, 16).storeAddress(config.royalty_address).endCell())
-            .endCell();
+    return beginCell()
+        .storeAddress(config.owner)
+        .storeUint(0, 64)
+        .storeAddress(null)
+        .storeCoins(0)
+        .storeCoins(0)
+        .storeBit(1)
+        .storeRef(
+            beginCell()
+                .storeUint(config.staking_conf.min_percent, 32)
+                .storeUint(config.staking_conf.max_percent, 32)
+                .storeCoins(config.staking_conf.reward_supply)
+                .storeUint(config.staking_conf.lockup_period, 32)
+                .storeUint(config.staking_conf.min_cycles, 32)
+                .storeUint(config.staking_conf.max_cycles, 32)
+                .endCell()
+        )
+        .storeRef(create_content(config.collection_content, config.nft_content))
+        .storeRef(config.nft_item_code)
+        .storeRef(
+            beginCell()
+                .storeUint(config.numerator, 16)
+                .storeUint(config.denominator, 16)
+                .storeAddress(config.royalty_address)
+                .endCell()
+        )
+        .endCell();
 }
 
 export class TokenStaking implements Contract {
@@ -90,8 +131,19 @@ export class TokenStaking implements Contract {
         });
     }
 
-    async sendChangeRoyalty(provider: ContractProvider, via: Sender, value: bigint, numerator: number, denominator: number, royalty_address: Address) {
-        let royalty_params = beginCell().storeUint(numerator, 16).storeUint(denominator, 16).storeAddress(royalty_address).endCell();
+    async sendChangeRoyalty(
+        provider: ContractProvider,
+        via: Sender,
+        value: bigint,
+        numerator: number,
+        denominator: number,
+        royalty_address: Address
+    ) {
+        let royalty_params = beginCell()
+            .storeUint(numerator, 16)
+            .storeUint(denominator, 16)
+            .storeAddress(royalty_address)
+            .endCell();
         await provider.internal(via, {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
@@ -105,17 +157,32 @@ export class TokenStaking implements Contract {
             body: beginCell().storeUint(7, 32).storeUint(1, 64).storeBit(use_default).endCell(),
         });
     }
+
+    async sendChangeConfig(provider: ContractProvider, via: Sender, value: bigint, config: StakingConfig) {
+        await provider.internal(via, {
+            value,
+            sendMode: SendMode.PAY_GAS_SEPARATELY,
+            body: beginCell().storeUint(10, 32).storeUint(1, 64).storeUint(config.min_percent, 32)
+            .storeUint(config.max_percent, 32)
+            .storeCoins(config.reward_supply)
+            .storeUint(config.lockup_period, 32)
+            .storeUint(config.min_cycles, 32)
+            .storeUint(config.max_cycles, 32).endCell(),
+        });
+    }
     // get-methods
 
-    async getStakingData(provider: ContractProvider) {
+    async getStakingData(provider: ContractProvider): Promise<GetStakingConfigResult> {
         const result = await provider.get('get_staking_data', []);
         let current_supply = result.stack.readBigNumber();
         let current_balance = result.stack.readBigNumber();
         let reward_supply = result.stack.readBigNumber();
-        let max_percent = result.stack.readNumber();
         let min_percent = result.stack.readNumber();
+        let max_percent = result.stack.readNumber();
         let lockup_period = result.stack.readNumber();
-        return {current_supply, current_balance, reward_supply, max_percent, min_percent, lockup_period};
+        let min_cycles = result.stack.readNumber();
+        let max_cycles = result.stack.readNumber();
+        return {current_supply, current_balance, staking_conf: {reward_supply, max_percent, min_percent, lockup_period, min_cycles, max_cycles}};
     }
 
     async getCollectionData(provider: ContractProvider) {
@@ -124,15 +191,15 @@ export class TokenStaking implements Contract {
         return {
             nextItemId: res.stack.readNumber(),
             collectionContent: res.stack.readCell().asSlice().skip(8).loadStringTail(),
-            ownerAddress: res.stack.readAddress()
-        }
+            ownerAddress: res.stack.readAddress(),
+        };
     }
 
     async getNftAddressByIndex(provider: ContractProvider, index: number): Promise<Address> {
         let tuple = new TupleBuilder();
         tuple.writeNumber(index);
         let res = await provider.get('get_nft_address_by_index', tuple.build());
-        return res.stack.readAddress()
+        return res.stack.readAddress();
     }
 
     async getRoyaltyParams(provider: ContractProvider) {
@@ -141,8 +208,8 @@ export class TokenStaking implements Contract {
         return {
             royaltyFactor: res.stack.readNumber(),
             royaltyBase: res.stack.readNumber(),
-            royaltyAddress: res.stack.readAddress()
-        }
+            royaltyAddress: res.stack.readAddress(),
+        };
     }
 
     async getNftContent(provider: ContractProvider, index: number, nftIndividualContent: Cell) {

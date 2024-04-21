@@ -21,7 +21,7 @@
 
 
 int min_tons_for_storage() asm "50000000 PUSHINT"; ;; 0.05 TON
-int burn_gas_value() asm "50000000 PUSHINT"; ;; 0.05 TON
+int burn_gas_value() asm "200000000 PUSHINT"; ;; 0.2 TON
 
 ;;
 ;;  Storage
@@ -153,7 +153,7 @@ int burn_gas_value() asm "50000000 PUSHINT"; ;; 0.05 TON
         int unlock_time = content_cs~load_uint(64);
         throw_unless(err::not_ready, unlock_time < now());
         send_msg(collection_address, 0, op::process_burn(), query_id, begin_cell().store_slice(owner_address).store_uint(index, 64).store_ref(content), 64);
-        store_data(index, collection_address, collection_address, content);
+        store_data(index, collection_address, "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c"a, content);
         return();
     }
     if (op == op::end_burn()) {
@@ -164,7 +164,7 @@ int burn_gas_value() asm "50000000 PUSHINT"; ;; 0.05 TON
                         .store_coins(0)
                         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
                         .store_uint(0, 32)
-                        .store_slice("Your jettons were returned, check your balance")
+                        .store_slice("Unfreezed ❄️☀️")
                     .end_cell();
         send_raw_message(msg_2, 128 + 32);
         

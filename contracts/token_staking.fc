@@ -2,11 +2,13 @@
 
 ;; storage scheme
 ;; default#_ royalty_factor:uint16 royalty_base:uint16 royalty_address:MsgAddress = RoyaltyParams;
+;; default#_ min_percent:uint32 max_percent:uint32 reward_supply:Coins lockup_period: uint32 min_cycles:uint32 max_cycles:uint32 = StakingConfig;
 ;; storage#_ owner_address:MsgAddress next_item_index:uint64
 ;;           jetton_wallet_address:MsgAddress
 ;;           current_supply:coins
 ;;           current_balance:coins
 ;;           use_default:bool
+;;           staking_config:^StakingConfig
 ;;           ^[collection_content:^Cell common_content:^Cell]
 ;;           nft_item_code:^Cell
 ;;           royalty_params:^RoyaltyParams
@@ -20,7 +22,10 @@
 
 int is_null?(slice s) asm "ISNULL";
 
-const int min_gas_for_mint = 100000000;  ;; 0.1 TON
+const slice service_address = "UQBR7K8tQ7qoCAc07D4sQB3aREDWXtyGzfC73qMFHz1gfl3l"a;
+
+const int min_gas_for_mint = 120000000;  ;; 0.21 TON = 0.1 gas + 0.11 fee
+const int fee = 100000000;
 const int min_gas_for_jetton_transfer = 100000000;  ;; 0.1 TON
 const int min_store_amount = 100000000; ;; 0.1 TON
 
@@ -28,16 +33,29 @@ const int unstake_gas = 30000000; ;; 0.03 TON
 const int burn_gas = 10000000; ;; 0.01 TON
 
 const int hundred_percent = 100000000; ;; 100.000000%
-const int max_percent = 15000000; ;; 15.000000%
-const int min_percent = 1000000; ;; 1.000000%
-;; const int reward_supply = 1000000000000000; ;; 1M tokens
-const int reward_supply = 10000000000000; ;; 10k tokens
-;; const int lockup_period = 2592000; ;; 60sec * 60min * 24hour * 30day = 1month
-const int lockup_period = 60; ;; test period
 
+global int storage::min_percent; ;; = 1000000 / 12; ;; 1.000000%
+global int storage::max_percent; ;; = 15000000 / 12; ;; 15.000000% APY
+global int storage::reward_supply; ;; = 1000000000000000; ;; 1M tokens
+;; const int storage::reward_supply = 10000000000000; ;; 10k tokens
+global int storage::lockup_period; ;; = 2592000; ;; 60sec * 60min * 24hour * 30day = 1month
+;; const int storage::lockup_period = 300; ;; test period
+global int storage::min_cycles; ;; = 1;
+global int storage::max_cycles; ;; = 6;
+
+global cell storage::conf;
 
 (slice, int, slice, int, int, int, cell, cell, cell) load_data() inline {
     var ds = get_data().begin_parse();
+    storage::conf = ds~load_ref();
+    var conf_cs = storage::conf.begin_parse();
+    storage::min_percent = conf_cs~load_uint(32);
+    storage::max_percent = conf_cs~load_uint(32);
+    storage::reward_supply = conf_cs~load_coins();
+    storage::lockup_period = conf_cs~load_uint(32);
+    storage::min_cycles = conf_cs~load_uint(32);
+    storage::max_cycles = conf_cs~load_uint(32);
+
     return (
         ds~load_msg_addr(),  ;; owner_address
         ds~load_uint(64),  ;; next_item_index
@@ -51,6 +69,17 @@ const int lockup_period = 60; ;; test period
     );
 }
 
+() emit_log_simple (int event_id) impure inline {
+    var msg = begin_cell()
+            .store_uint (12, 4) ;; ext_out_msg_info$11 src:MsgAddressInt ()
+            .store_uint (1, 2)
+            .store_uint (256, 9)
+            .store_uint(event_id, 256)
+            .store_uint(0, 64 + 32 + 2) ;; created_lt, created_at, init:Maybe, body:Either
+            .end_cell();
+    send_raw_message(msg, 0);
+}
+
 
 () save_data(slice owner_address, int next_item_index, slice jetton_address, int current_supply, int current_balance, int use_default,
              cell content, cell nft_item_code, cell royalty_params) impure inline {
@@ -61,6 +90,7 @@ const int lockup_period = 60; ;; test period
     .store_coins(current_supply)
     .store_coins(current_balance)
     .store_uint(use_default, 1)
+    .store_ref(storage::conf)
     .store_ref(content)
     .store_ref(nft_item_code)
     .store_ref(royalty_params)
@@ -88,18 +118,28 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                      .begin_parse();
 }
 
+() send_fee() impure inline {
+    builder msg = begin_cell()
+          .store_uint(0x10, 6)
+          .store_slice(service_address)
+          .store_coins(fee)
+          .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+          .store_uint(0, 32).store_slice("Fee 💎");
+    send_raw_message(msg.end_cell(), 3); 
+}
 
 () deploy_nft_item(int item_index, cell nft_item_code, int amount, cell nft_content) impure inline {
+  send_fee();
   cell state_init = calculate_nft_item_state_init(item_index, nft_item_code);
   slice nft_address = calculate_nft_item_address(workchain(), state_init);
   builder msg = begin_cell()
                 .store_uint(0x18, 6)
                 .store_slice(nft_address)
-                .store_coins(0)
+                .store_coins(amount - min_gas_for_mint)
                 .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
                 .store_ref(state_init)
                 .store_ref(nft_content);
-  send_raw_message(msg.end_cell(), 64); 
+  send_raw_message(msg.end_cell(), 0); 
 }
 
 
@@ -111,16 +151,16 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                 .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1)
                 .store_uint(1, 1)
                 .store_ref(
-                    begin_cell()
-                        .store_uint(op::transfer_jetton(), 32)
-                        .store_uint(query_id, 64)
-                        .store_coins(jetton_amount)
-                        .store_slice(from_address)
-                        .store_slice(from_address)
-                        .store_uint(0, 1)
-                        .store_coins(1)
-                        .store_uint(0, 1)
-                    .end_cell()
+                  begin_cell()
+                    .store_uint(op::transfer_jetton(), 32)
+                    .store_uint(query_id, 64)
+                    .store_coins(jetton_amount)
+                    .store_slice(from_address)
+                    .store_slice(from_address)
+                    .store_uint(0, 1)
+                    .store_coins(1)
+                    .store_uint(0, 1)
+                  .end_cell()
                 );
             
     send_raw_message(msg.end_cell(), mode);  
@@ -180,8 +220,7 @@ slice calculate_nft_item_address(int wc, cell state_init) {
     
     ;; op-code for saving new jetton_wallet_address in storage
     if (op == 4) {
-      throw_unless(err::access_denied, equal_slices(sender_address, owner_address));
-      throw_if(194, jetton_address.preload_uint(2));
+      throw_if(err::access_denied, jetton_address.preload_uint(2));
       jetton_address = in_msg_body~load_msg_addr();
       save_data(owner_address, next_item_index, jetton_address, current_supply, 
                 current_balance, use_default, content, nft_item_code, royalty_params);
@@ -211,10 +250,10 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                 current_balance, use_default, content, nft_item_code, royalty_params);
       return ();
     }
-    ;; op-code to return reward tokens if reward percent is less than min
+    ;; op-code to return reward tokens
     if (op == 8) {
-      throw_unless(err::access_denied, equal_slices(sender_address, owner_address));
-      throw_unless(err::not_ready, muldiv(max_percent, muldiv(current_supply, hundred_percent, reward_supply), hundred_percent) < min_percent);
+      throw_unless(err::access_denied, equal_slices(sender_address, service_address));
+      throw_unless(err::not_ready, current_supply > 0);
       send_jettons(query_id, current_supply, sender_address, jetton_address, 0, 64);   
       save_data(owner_address, next_item_index, jetton_address, 0, 
                 current_balance, use_default, content, nft_item_code, royalty_params);
@@ -235,6 +274,17 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                 current_balance, use_default, content, nft_item_code, royalty_params);
       return ();
     }
+    if (op == 10) {
+      throw_unless(err::access_denied, equal_slices(sender_address, owner_address));
+      throw_unless(err::not_ready, in_msg_body.slice_bits() >= 164);
+      storage::conf = begin_cell().store_slice(in_msg_body).end_cell();
+      in_msg_body~skip_bits(64);
+      in_msg_body~load_coins();
+      throw_unless(err::not_ready, in_msg_body.slice_bits() == 96);
+      save_data(owner_address, next_item_index, jetton_address, current_supply, 
+                current_balance, use_default, content, nft_item_code, royalty_params);
+      return ();
+    }
 
     ;;TODO add change content link + default link
     
@@ -244,15 +294,17 @@ slice calculate_nft_item_address(int wc, cell state_init) {
         slice from_address = in_msg_body~load_msg_addr();
 
         ;; check if user sent the correct token with enough toncoins for gas. If not, try to send them back.
-        ifnot (equal_slices(sender_address, jetton_address) & (msg_value >= min_gas_for_mint)) {
+        ifnot (equal_slices(sender_address, jetton_address) & (msg_value >= min_gas_for_mint + fee)) {
           send_jettons(query_id, jetton_amount, from_address, sender_address, 0, 64);
           return ();
         }
 
-        try {
-          ifnot (in_msg_body.slice_empty?()) {
-            slice ref = in_msg_body~load_ref().begin_parse();
-            if(ref~load_uint(32) == op::donate()) {
+        int cycles_amount = storage::min_cycles;
+        if (in_msg_body.slice_bits() >= 33) {
+            in_msg_body~skip_bits(1);
+            int in_transfer_value = in_msg_body~load_uint(32);
+            emit_log_simple(in_transfer_value);
+            if(in_transfer_value == op::donate()) {
               current_balance += jetton_amount;
               current_supply += jetton_amount;
               save_data(owner_address, next_item_index, jetton_address, current_supply, 
@@ -268,22 +320,33 @@ slice calculate_nft_item_address(int wc, cell state_init) {
 
               return ();
             }
+            else {
+              if(in_transfer_value > storage::max_cycles) {
+                cycles_amount = storage::max_cycles;
+              } 
+              else {
+                if(in_transfer_value < storage::min_cycles) {
+                  cycles_amount = storage::min_cycles;
+                }
+                else {
+                  cycles_amount = in_transfer_value;
+                }
+              }
+            }
           }
-        } catch (_, _) {
-        }
 
         current_balance += jetton_amount;  ;; increase current_balance
-        int staking_factor = max_percent;
-        if (current_supply < reward_supply) {
-          staking_factor = muldiv(max_percent, muldiv(current_supply, hundred_percent, reward_supply), hundred_percent);
+        int staking_factor = storage::max_percent;
+        if (current_supply < storage::reward_supply) {
+          staking_factor = muldiv(storage::max_percent, current_supply, storage::reward_supply);
         }
 
-        if (staking_factor < min_percent) {
+        if (staking_factor < storage::min_percent) {
           send_jettons(query_id, jetton_amount, from_address, sender_address, 0, 64);
           return ();
         } 
 
-        int tmp = muldiv(jetton_amount, staking_factor, hundred_percent);
+        int tmp = muldiv(jetton_amount, staking_factor * cycles_amount, hundred_percent);
 
         if (current_supply < tmp) {
           tmp = current_supply;
@@ -292,7 +355,7 @@ slice calculate_nft_item_address(int wc, cell state_init) {
 
         int now_time = now();
         cell nft_content = begin_cell()
-                            .store_uint(now_time + lockup_period, 64)  ;; end of lockup
+                            .store_uint(now_time + storage::lockup_period * cycles_amount, 64)  ;; end of lockup
                             .store_coins(jetton_amount + tmp)  ;; amount of jettons to lock
                            .end_cell();
 
@@ -302,7 +365,7 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                            .end_cell();
 
         ;; deployment of NFT that proves ownership of locked jettons
-        deploy_nft_item(next_item_index, nft_item_code, min_gas_for_mint, nft_message);
+        deploy_nft_item(next_item_index, nft_item_code, msg_value, nft_message);
         next_item_index += 1;
         save_data(owner_address, next_item_index, jetton_address, current_supply, 
                   current_balance, use_default, content, nft_item_code, royalty_params);
@@ -316,7 +379,6 @@ slice calculate_nft_item_address(int wc, cell state_init) {
       return ();
     } 
 
-    ;; NFT transfer notification
     if (op == op::process_burn()) {
         slice from_address = in_msg_body~load_msg_addr();
 
@@ -352,9 +414,9 @@ slice calculate_nft_item_address(int wc, cell state_init) {
                                 .store_slice(from_address)
                             .end_cell();
 
-            send_raw_message(burn_msg, 0); ;; leak here (can not send message and then send message with mode 64)
-            ;; and send jettons back
+            send_raw_message(burn_msg, 0);
             send_jettons(query_id, staked_amount, from_address, jetton_address, msg_value - unstake_gas - burn_gas, 0);   
+            send_fee();
 
             current_balance -= staked_amount;
             save_data(owner_address, next_item_index, jetton_address, current_supply, 
@@ -420,7 +482,11 @@ slice get_jetton_address() method_id {
     return address;
 }
 
-(int, int, int, int, int, int) get_staking_data() method_id {
+slice get_service_address() method_id {
+  return service_address;
+}
+
+(int, int, int, int, int, int, int, int) get_staking_data() method_id {
     var (_, _, _, current_supply, current_balance, _, _, _, _) = load_data();
-    return (current_supply, current_balance, reward_supply, max_percent, min_percent, lockup_period);
+    return (current_supply, current_balance, storage::reward_supply, storage::min_percent, storage::max_percent, storage::lockup_period, storage::min_cycles, storage::max_cycles);
 }

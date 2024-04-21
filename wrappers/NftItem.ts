@@ -1,8 +1,8 @@
 import { Address, beginCell, Cell, Contract, contractAddress, ContractProvider, Sender, SendMode } from 'ton-core';
 
 export type NftItemConfig = {
-    index: number,
-    master: Address
+    index: number;
+    master: Address;
 };
 
 export function nftItemConfigToCell(config: NftItemConfig): Cell {
@@ -26,8 +26,8 @@ export class NftItem implements Contract {
         await provider.internal(via, {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body: beginCell().storeUint(0x55521d04, 32).storeUint(123, 64).endCell()
-        })
+            body: beginCell().storeUint(0x55521d04, 32).storeUint(123, 64).endCell(),
+        });
     }
 
     // get methods
@@ -37,15 +37,15 @@ export class NftItem implements Contract {
         return {
             lockup_time: res.stack.readNumber(),
             locked_amount: res.stack.readBigNumber(),
-            index: res.stack.readNumber()
-        }
+            index: res.stack.readNumber(),
+        };
     }
-    
+
     async getOwner(provider: ContractProvider) {
         const result = await provider.get('get_nft_data', []);
-        result.stack.readBigNumber()
-        result.stack.readBigNumber()
-        result.stack.readAddress()
-        return result.stack.readAddress()
+        result.stack.readBigNumber();
+        result.stack.readBigNumber();
+        result.stack.readAddress();
+        return result.stack.readAddress();
     }
 }
